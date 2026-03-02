@@ -6,6 +6,8 @@ from neo4j import GraphDatabase
 
 
 class Neo4jRepository:
+
+    # Lab1 =================
     # Подключение к базе данных
     def __init__(self, uri: str, user: str, password: str, database: str = "neo4j", namespace_title: str = "default"):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -124,7 +126,7 @@ class Neo4jRepository:
         return [self.collect_node(record) for record in result]
 
     def get_node_by_uri(self, uri: str) -> Optional[Dict]:
-        query = "MATCH (n {uri:'$uri'}) RETURN n"
+        query = "MATCH (n {uri:$uri}) RETURN n"
         result = self.run_custom_query(query, {'uri': uri})
 
         if result:
@@ -175,7 +177,7 @@ class Neo4jRepository:
         result = self.run_custom_query(query, {'uri': uri})
         return result[0]['deleted_count'] > 0
 
-    def delete_arc_by_id(self, arc_id: int) -> bool:
+    def delete_arc_by_id(self, arc_id: str) -> bool:
         query = """
         MATCH ()-[r]->()
         WHERE elementId(r) = $arc_id
@@ -233,59 +235,276 @@ class Neo4jRepository:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-# Пример использования:
-if __name__ == "__main__":
-    with Neo4jRepository(
-            uri="neo4j://127.0.0.1:7687",
-            user="neo4j",
-            password="12345678"
-    ) as repo:
-        node1 = repo.create_node({
-            'labels': ['Person'],
-            'description': 'Natalia',
+
+    # Lab2 =========
+
+    def get_uri_unique_part(self, uri):
+        return uri.split('/')[-1]
+
+    def create_class(self, title, description='', parent_uri=None):
+        node = self.create_node({'title': title, 'description': description, 'labels': ['Class']})
+        node = self.update_node(node['uri'], {'labels': [self.get_uri_unique_part(node['uri'])]})
+        if parent_uri is not None:
+             self.create_arc(node['uri'], parent_uri, 'subclassOf')
+        return node
+
+    def update_class(self, class_uri, title, description):
+        node = self.update_node(class_uri, {'title': title, 'description': description})
+        return node
+
+    def add_class_parent(self, class_uri, parent_uri):
+        arc = self.create_arc(class_uri, parent_uri, 'subclassOf')
+        return arc
+
+    def get_class(self, class_uri):
+        return self.get_node_by_uri(class_uri)
+
+    def get_class_parents(self, class_uri):
+        query = """
+        MATCH path = (n:Class {uri: $uri})-[:subclassOf*]->(ancestor)
+        RETURN DISTINCT ancestor
+        """
+        nodes = self.run_custom_query(query, {'uri': class_uri});
+        result = []
+        for node in nodes:
+            result.append(self.collect_node(node))
+        return result
+
+    def get_class_children(self, class_uri):
+        query = """
+        MATCH path = (n:Class {uri: $uri})<-[:subclassOf*]-(child)
+        RETURN DISTINCT child
+        """
+        nodes = self.run_custom_query(query, {'uri': class_uri});
+        result = []
+        for node in nodes:
+            result.append(self.collect_node(node))
+        return result
+
+    def get_ontology_parent_classes(self):
+        query = """
+        MATCH (n:Class)
+        WHERE NOT (n)-[:subclassOf]->()
+        RETURN n
+        """
+        nodes = self.run_custom_query(query);
+        result = []
+        for node in nodes:
+            result.append(self.collect_node(node))
+        return result
+
+    def collect_single_signature(self, class_uri, acc):
+        query1 = """
+        MATCH (p:DatatypeProperty)-[:domain]->(:Class {uri: $uri})
+        RETURN p
+        """
+        nodes_datatype = self.run_custom_query(query1, {'uri' : class_uri});
+        for node in nodes_datatype:
+            collected_node = self.collect_node(node)
+            if collected_node not in acc['params']:
+                acc['params'].append(collected_node)
+
+        query2 = """
+        MATCH (:Class {uri: $uri})<-[:domain]-(p:ObjectProperty)-[:range]->(:Class)
+        RETURN p
+        """
+        nodes_objtype1 = self.run_custom_query(query2, {'uri' : class_uri});
+        for node in nodes_objtype1:
+            tDict = self.collect_node(node)
+            tDict['relation_direction'] = 1
+            if tDict not in acc['obj_params']:
+                acc['obj_params'].append(tDict)
+
+        query3 = """
+        MATCH (:Class {uri: $uri})<-[:range]-(p:ObjectProperty)-[:domain]->(:Class)
+        RETURN p
+        """
+        nodes_objtype2 = self.run_custom_query(query3, {'uri' : class_uri});
+        for node in nodes_objtype2:
+            tDict = self.collect_node(node)
+            tDict['relation_direction'] = -1
+            if tDict not in acc['obj_params']:
+                acc['obj_params'].append(tDict)
+        return acc
+
+    def collect_signature(self, class_uri):
+        acc = {'params': [], 'obj_params': []}
+        self.collect_single_signature(class_uri, acc)
+        parents = self.get_class_parents(class_uri)
+        for parent in parents:
+            self.collect_single_signature(parent['uri'], acc)
+        return acc
+
+    def check_sign_props(self, signature, properties):
+        sign_titles_data = [p['title'] for p in signature['params']]
+        sign_titles_obj = [p['title'] for p in signature['obj_params']]
+        prop_titles_data = [p for p in properties['params']]
+        prop_titles_obj = [p for p in properties['obj_params']]
+
+        for title in sign_titles_data:
+            if title not in prop_titles_data:
+                return False
+        for title in sign_titles_obj:
+            if title not in prop_titles_obj:
+                return False
+        for title in prop_titles_data:
+            if title not in sign_titles_data:
+                return False
+        for title in prop_titles_obj:
+            if title not in sign_titles_obj:
+                return False
+        return True
+
+    def update_object(self, obj_uri, properties):
+        query = """
+        MATCH (p:Class)<-[:type]-(:Object {uri: $uri})
+        RETURN p
+        """
+        node = self.run_custom_query(query, {'uri': obj_uri})
+        node = self.collect_node(node[0])
+        class_sign = self.collect_signature(node['uri'])
+        # if not self.check_sign_props(class_sign, properties):
+        #     raise ValueError("Wrong properties given")
+        node = self.update_node(obj_uri, properties['params'])
+
+        query1 = """
+        MATCH (n:Object {uri: $uri})-[r]->(:Object)
+        DELETE r
+        """
+        self.run_custom_query(query1, {'uri': obj_uri})
+
+        for arc in properties['obj_params']:
+            self.create_arc(obj_uri, properties['obj_params'][arc], arc)
+
+        return node
+
+
+    def create_object(self, class_uri, title, properties, description=""):
+        node = self.create_node({'title': title, 'description': description, 'labels': ['Object', self.get_uri_unique_part(class_uri)]})
+        node = self.update_node(node['uri'], {'labels': [self.get_uri_unique_part(node['uri'])]})
+        self.create_arc(node['uri'], class_uri, 'type')
+        node = self.update_object(node['uri'], properties)
+        return node
+
+    def get_object(self, object_uri):
+        node = self.get_node_by_uri(object_uri)
+        query = """
+        MATCH r = (n:Object {uri: $uri})-[]->(:Object)
+        RETURN r
+        """
+        arcs = self.run_custom_query(query, {'uri': self.get_uri_unique_part(object_uri)})
+        arcs = [self.collect_arc(arc) for arc in arcs]
+        for arc in arcs:
+            node[arc['title']] = arc['node_uri_to']
+        return node
+
+    def delete_object(self, object_uri):
+        return self.delete_node_by_uri(object_uri)
+
+    def get_class_objects(self, class_uri):
+        classes = self.get_class_children(class_uri)
+        classes.append(self.get_class(class_uri))
+
+        result = []
+        for c in classes:
+            tResult = self.get_nodes_by_labels([self.get_uri_unique_part(c['uri'])])
+            for node in tResult:
+                if 'Object' in node['labels']:
+                    result.append(node)
+        return result
+
+    def get_ontology(self):
+        classes = self.get_nodes_by_labels(['Class'])
+        objects = self.get_nodes_by_labels(['Object'])
+        return {
+            'Classes': classes,
+            'Objects': objects
+        }
+
+    def add_class_attribute(self, class_uri, title):
+        node = self.create_node({
+            'title': title,
+            'labels': ['DatatypeProperty']
         })
+        self.create_arc(node['uri'], class_uri, 'domain')
+        return node
 
-        node2 = repo.create_node({
-            'labels': ['Person'],
-            'description': 'Jane',
+    def delete_class_attribute(self, property_uri):
+        node = self.get_node_by_uri(property_uri)
+        title = node['title']
+
+        query = """
+        MATCH (p:DatatypeProperty {uri: $uri})-[:domain]->(c:Class)
+        RETURN c
+        """
+        class_result = self.run_custom_query(query, {'uri': property_uri})
+        target_class = self.collect_node(class_result[0])
+
+        objects = self.get_class_objects(target_class['uri'])
+        for obj in objects:
+            obj_updates = {}
+            if title in obj:
+                obj_updates[title] = None
+                self.update_node(obj['uri'], obj_updates)
+
+        return self.delete_node_by_uri(property_uri)
+
+    def add_class_object_attribute(self, class_uri, range_class_uri, title):
+        node = self.create_node({
+            'title': title,
+            'labels': ['ObjectProperty']
         })
+        self.create_arc(node['uri'], class_uri, 'domain')
+        self.create_arc(node['uri'], range_class_uri, 'range')
+        return node
 
-        node3 = repo.create_node({
-            'labels': ['Person'],
-            'description': 'Ivan',
-        })
+    def delete_class_object_attribute(self, object_property_uri):
+        node = self.get_node_by_uri(object_property_uri)
+        title = node.get('title')
 
-        print("Created nodes:", node1, node2, node3)
+        query1 = """
+        MATCH (p:ObjectProperty {uri: $uri})-[:domain]->(c:Class)
+        RETURN c
+        """
+        domain_result = self.run_custom_query(query1, {'uri': object_property_uri})
+        domain_class = self.collect_node(domain_result[0])
+        objects = self.get_class_objects(domain_class['uri'])
 
-        arc1 = repo.create_arc(
-            node1_uri=node1['uri'],
-            node2_uri=node2['uri'],
-            arc_type='knows',
-        )
-        arc2 = repo.create_arc(
-            node1_uri=node1['uri'],
-            node2_uri=node3['uri'],
-            arc_type='knows',
-        )
-        arc3 = repo.create_arc(
-            node1_uri=node3['uri'],
-            node2_uri=node2['uri'],
-            arc_type='knows',
-        )
+        for obj in objects:
+            query2 = """
+            MATCH (obj:Object {uri: $uri})-[r:""" + title + """]->()
+            DELETE r
+            """
+            self.run_custom_query(
+                query2,
+                {'uri': obj['uri']}
+            )
+        return self.delete_node_by_uri(object_property_uri)
 
-        print("Created arcs:", arc1, arc2, arc3)
+    def delete_class(self, class_uri):
+        classes = self.get_class_children(class_uri)
+        classes.append(self.get_class(class_uri))
 
-        all_data = repo.get_all_nodes_and_arcs()
-        print("All nodes and arcs:", all_data)
+        for obj in self.get_class_objects(class_uri):
+            self.delete_node_by_uri(obj['uri'])
 
-        persons = repo.get_nodes_by_labels(['Person'])
-        print("All persons:", persons)
+        for cls in classes:
+            query1 = """
+            MATCH (p:DatatypeProperty)-[:domain]->(c:Class {uri: $uri})
+            DETACH DELETE p
+            """
+            self.run_custom_query(query1, {'uri': cls['uri']})
 
-        updated = repo.update_node(node1['uri'], {'description': 'Updated person'})
-        print("Updated node:", updated)
+            query2 = """
+            MATCH (p:ObjectProperty)-[:domain]->(c:Class {uri: $uri})
+            DETACH DELETE p
+            """
+            self.run_custom_query(query2, {'uri': cls['uri']})
 
-        print(repo.delete_arc_by_id(arc2['id']))
+        deleted_count = 0
+        for cls in classes:
+            if self.delete_node_by_uri(cls['uri']):
+                deleted_count += 1
 
-        print(repo.delete_node_by_uri(node3['uri']))
+        return deleted_count > 0
 
-        repo.clear_db()
