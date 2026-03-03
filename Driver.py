@@ -294,6 +294,8 @@ class Neo4jRepository:
         return result
 
     def collect_single_signature(self, class_uri, acc):
+        seen_params = {p['title'] for p in acc['params']}
+        seen_obj_params = {p['title'] for p in acc['obj_params']}
         query1 = """
         MATCH (p:DatatypeProperty)-[:domain]->(:Class {uri: $uri})
         RETURN p
@@ -301,8 +303,9 @@ class Neo4jRepository:
         nodes_datatype = self.run_custom_query(query1, {'uri' : class_uri});
         for node in nodes_datatype:
             collected_node = self.collect_node(node)
-            if collected_node not in acc['params']:
+            if collected_node['title'] not in seen_params:
                 acc['params'].append(collected_node)
+                seen_params.add(collected_node['title'])
 
         query2 = """
         MATCH (:Class {uri: $uri})<-[:domain]-(p:ObjectProperty)-[:range]->(:Class)
@@ -312,8 +315,9 @@ class Neo4jRepository:
         for node in nodes_objtype1:
             tDict = self.collect_node(node)
             tDict['relation_direction'] = 1
-            if tDict not in acc['obj_params']:
+            if tDict['title'] not in seen_obj_params:
                 acc['obj_params'].append(tDict)
+                seen_obj_params.add(tDict['title'])
 
         query3 = """
         MATCH (:Class {uri: $uri})<-[:range]-(p:ObjectProperty)-[:domain]->(:Class)
@@ -323,8 +327,9 @@ class Neo4jRepository:
         for node in nodes_objtype2:
             tDict = self.collect_node(node)
             tDict['relation_direction'] = -1
-            if tDict not in acc['obj_params']:
+            if tDict['title'] not in seen_obj_params:
                 acc['obj_params'].append(tDict)
+                seen_obj_params.add(tDict['title'])
         return acc
 
     def collect_signature(self, class_uri):
