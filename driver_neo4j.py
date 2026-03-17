@@ -3,11 +3,6 @@ import random
 import string
 from typing import List, Dict, Any, Optional
 from neo4j import GraphDatabase
-from sentence_transformers import SentenceTransformer
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-
-EMBEDDING_MODEL = SentenceTransformer("sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
 
 class Neo4jRepository:
 
@@ -516,35 +511,3 @@ class Neo4jRepository:
                 deleted_count += 1
 
         return deleted_count > 0
-
-#Lab3 ===========
-#Вне основного класса!
-
-#Разбивает текст на фрагменты указанной длины
-def get_chunks(text, chunk_size = 128):
-    chunks = []
-
-    for i in range(0, len(text), chunk_size):
-        if i + chunk_size <= len(text):
-            chunk = text[i:i + chunk_size]
-        else:
-            chunk = text[i:]
-        chunks.append(chunk)
-
-    return chunks
-
-#По фрагментам текста возвращает их эмбединги сразу в виде нампаевских массивов
-def get_embeddings(chunks: List[str]):
-    embeddings = EMBEDDING_MODEL.encode(chunks)
-    return embeddings
-
-#По эмбедингам после get_embeddings возвращает степень сходства в виде числа от 0 до 1
-def cos_compare(a: np.ndarray, b: np.ndarray):
-    #sklearn ожидает 2D массивы
-    a_2d = a.reshape(1, -1)
-    b_2d = b.reshape(1, -1)
-
-    # возвращает матрицу виде [[числа(схожесть)]]
-    similarity_matrix = cosine_similarity(a_2d, b_2d)
-
-    return float(similarity_matrix[0, 0])
