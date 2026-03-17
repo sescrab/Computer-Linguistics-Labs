@@ -4,7 +4,6 @@ import string
 from typing import List, Dict, Any, Optional
 from neo4j import GraphDatabase
 
-
 class Neo4jRepository:
 
     # Lab1 =================
@@ -512,4 +511,3 @@ class Neo4jRepository:
                 deleted_count += 1
 
         return deleted_count > 0
-
