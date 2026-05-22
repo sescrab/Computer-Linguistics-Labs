@@ -108,7 +108,8 @@ def make_prompt(user_request, ontology_data):
     )
     return response.choices[0].message.content
 
-def iterate_llm(user_request, ontology_data, helping_nodes_saved=[], helping_nodes_new=3):
+
+def iterate_llm(user_request, ontology_data, helping_nodes_saved=[], helping_nodes_new=3, entities_data={}, L=3):
     request_embedding = get_embeddings([user_request])[0]
     for el in ontology_data:
         el['score'] = cos_compare(el['embedding'], request_embedding)
@@ -118,10 +119,83 @@ def iterate_llm(user_request, ontology_data, helping_nodes_saved=[], helping_nod
     for node in ontology_data[:helping_nodes_new]:
         if node['id'] not in saved_ids:
             helping_nodes_saved.append(node)
+            saved_ids.add(node['id'])
     context_text = ""
     for node in helping_nodes_saved:
         context_text += node['text'] + "\n\n"
 
-    answer = make_prompt(user_request, context_text)
+    if entities_data == {}:
+        answer = make_prompt(user_request, context_text)
+    else:
+        found_fragments = set()
+        for id in saved_ids:
+            if id in entities_data:
+                for fragment in entities_data[id]:
+                    found_fragments.add(fragment)
+        found_fragments = list(found_fragments)
+        fragments_embeddings = get_embeddings(found_fragments)
+        fragments_scored = []
+        for i in range(len(found_fragments)):
+            fragments_scored.append([found_fragments[i], cos_compare(fragments_embeddings[i], request_embedding)])
+        fragments_scored.sort(key=lambda x: x[1], reverse=True)
+        fragments_text = "\n\n".join([fragment[0] for fragment in fragments_scored[:L]])
+        answer = make_prompt_upgraded(user_request, context_text, fragments_text)
     return answer
 
+#Lab7 ===========
+
+def make_prompt_upgraded(user_request, ontology_data, text_fragments):
+    prompt = f"Ответь на заданный вопрос: {user_request}\n\nИспользуя основной текст:\n{ontology_data}\n\nДополняя свой ответ данными текстами:\n{text_fragments}"
+
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
+
+
+def get_markup_data(markup_files, K=5):
+    entities_data = {}
+
+    for path in markup_files:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        entities = data.get('entites', [])
+        text_with_ids = data.get('textWithIds', {})
+
+        paragraphs = {}
+
+        for id, text in text_with_ids.items():
+            p_id = int(id) // 1000
+
+            if p_id not in paragraphs:
+                paragraphs[p_id] = []
+            paragraphs[p_id].append((int(id), text))
+
+        for p_id in paragraphs:
+            paragraphs[p_id].sort(key=lambda x: x[0])
+            paragraphs[p_id] = " ".join([word[1].strip() for word in paragraphs[p_id]])
+
+        for el in entities:
+            uri = el.get('node_uri')
+            if not uri:
+                continue
+
+            if uri not in entities_data:
+                entities_data[uri] = set()
+
+            pos_start = el.get('pos_start')
+            if pos_start is not None:
+                p_id = pos_start // 1000
+
+                fragment_parts = []
+                for i in range(p_id - K, p_id + K + 1):
+                    if i in paragraphs:
+                        fragment_parts.append(paragraphs[i])
+
+                fragment = " ".join(fragment_parts).strip()
+                if fragment:
+                    entities_data[uri].add(fragment)
+
+    return entities_data
